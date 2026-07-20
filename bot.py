@@ -278,11 +278,23 @@ async def ruttien(interaction: discord.Interaction, so_tien: int):
     # Đưa bot vào trạng thái suy nghĩ để tránh lỗi Timeout khi gọi API
     await interaction.response.defer()
 
-    # KỂM TRA SERVER ONLINE
+    # KỂM TRA SERVER ONLINE (Đã tối ưu cho IP có Port)
     if SERVER_IP:
         try:
+            # Tách IP và Port nếu người dùng nhập dạng ip:port
+            clean_ip = SERVER_IP
+            if ":" in SERVER_IP:
+                clean_ip = SERVER_IP.split(":")[0]
+                
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://api.mcsrvstat.us/2/{SERVER_IP}") as resp:
+                async with session.get(f"https://api.mcsrvstat.us/2/{clean_ip}") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if not data.get("online"):
+                            return await interaction.followup.send("❌ **SERVER ĐANG TẮT!** Vui lòng mở server trước khi rút tiền để tránh mất oan số dư.", ephemeral=True)
+        except Exception as e:
+            print(f"Lỗi check API Server: {e}")
+
                     if resp.status == 200:
                         data = await resp.json()
                         if not data.get("online"):
