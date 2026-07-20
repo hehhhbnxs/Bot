@@ -25,7 +25,7 @@ def keep_alive():
     t.start()
 
 TOKEN = os.environ.get('DISCORD_TOKEN')
-SERVER_IP = os.environ.get('SERVER_IP', '') # VD: myserver.aternos.me (THÊM BIẾN NÀY LÊN RENDER)
+SERVER_IP = os.environ.get('SERVER_IP', '') # Nhận IP dạng ip:port từ Render
 
 # Lấy ID Kênh từ biến môi trường
 try:
@@ -39,9 +39,9 @@ except ValueError:
 
 DB_FILE = 'users.json'
 data_changed = False
-current_word = "thời tiết" 
+current_word = "thời tiết" # Từ khởi đầu mặc định
 
-# --- QUẢN LÝ DATABASE ---
+# --- QUẢN LÝ DATABASE CHỐNG MẤT DỮ LIỆU ---
 def load_db():
     if not os.path.exists(DB_FILE): 
         return {"users": {}}
@@ -152,8 +152,9 @@ bot = MyBot()
 
 @bot.event
 async def on_ready():
-    print(f'✅ Bot {bot.user.name} ĐÃ SẴN SÀNG!')
+    print(f'✅ Bot {bot.user.name} ĐÃ SẴN SÀNG TRÊN RENDER!')
     
+    # Khôi phục dữ liệu từ kênh chat Discord khi khởi động lại
     if BACKUP_CHANNEL_ID:
         try:
             channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
@@ -162,7 +163,7 @@ async def on_ready():
                     attachment = msg.attachments[0]
                     if attachment.filename == DB_FILE:
                         await attachment.save(DB_FILE)
-                        print("☁️ Đã tải xuống và khôi phục dữ liệu từ Backup!")
+                        print("☁️ Đã tải và khôi phục dữ liệu thành công!")
                         break
         except Exception as e:
             print(f"Lỗi khôi phục data: {e}")
@@ -195,7 +196,7 @@ async def on_message(message):
         text = message.content.lower().strip()
         words = text.split()
         
-        # Đã fix lỗi isalpha() không nhận diện được dấu cách
+        # Chấp nhận chuỗi chữ có dấu tiếng Việt hợp lệ
         if len(words) == 2 and text.replace(" ", "").isalpha(): 
             last_syllable = current_word.split()[-1]
             first_syllable = words[0]
@@ -275,26 +276,18 @@ async def ruttien(interaction: discord.Interaction, so_tien: int):
     if not CONSOLE_CHANNEL_ID:
         return await interaction.response.send_message("❌ Kênh Console chưa được thiết lập!", ephemeral=True)
 
-    # Đưa bot vào trạng thái suy nghĩ để tránh lỗi Timeout khi gọi API
+    # Defer phản hồi để tránh lỗi quá 3 giây khi gọi API check server
     await interaction.response.defer()
 
-    # KỂM TRA SERVER ONLINE (Đã tối ưu cho IP có Port)
+    # KIỂM TRA SERVER ONLINE (Xử lý thông minh bóc tách Port)
     if SERVER_IP:
         try:
-            # Tách IP và Port nếu người dùng nhập dạng ip:port
             clean_ip = SERVER_IP
             if ":" in SERVER_IP:
-                clean_ip = SERVER_IP.split(":")[0]
+                clean_ip = SERVER_IP.split(":")[0] # Lấy cụm IP phía trước dấu hai chấm
                 
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"https://api.mcsrvstat.us/2/{clean_ip}") as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if not data.get("online"):
-                            return await interaction.followup.send("❌ **SERVER ĐANG TẮT!** Vui lòng mở server trước khi rút tiền để tránh mất oan số dư.", ephemeral=True)
-        except Exception as e:
-            print(f"Lỗi check API Server: {e}")
-
                     if resp.status == 200:
                         data = await resp.json()
                         if not data.get("online"):
@@ -326,7 +319,7 @@ async def vi(interaction: discord.Interaction):
     embed.add_field(name="💰 Số dư", value=f"**${u.get('balance', 0)}**", inline=True)
     await interaction.response.send_message(embed=embed)
 
-# CHẠY BOT
+# KHỞI CHẠY
 if __name__ == "__main__":
     keep_alive()
     bot.run(TOKEN)
