@@ -40,11 +40,6 @@ except ValueError:
 DB_FILE = 'users.json'
 data_changed = False
 
-# --- BIẾN TOÀN CỤC CHO GAME NỐI TỪ ---
-STARTING_WORDS = ["thời tiết", "gia đình", "máy tính", "bầu trời", "con mèo", "xe đạp", "hoa hồng", "âm nhạc", "hạnh phúc", "công việc", "bóng đá", "học tập"]
-current_word = random.choice(STARTING_WORDS)
-last_player_id = None 
-
 # --- QUẢN LÝ DATABASE ---
 def load_db():
     if not os.path.exists(DB_FILE): 
@@ -67,7 +62,27 @@ def save_db(data):
         print(f"Lỗi lưu file: {e}")
 
 # ====================================================================
-# --- PHẦN 2: GIAO DIỆN BẦU CUA ---
+# --- PHẦN 2: HỆ THỐNG NỐI TỪ (BẢN NÂNG CẤP) ---
+# ====================================================================
+STARTING_WORDS = ["thời tiết", "gia đình", "máy tính", "bầu trời", "con mèo", "xe đạp", "hoa hồng", "âm nhạc", "hạnh phúc", "công việc", "bóng đá", "học tập", "tình yêu", "kết quả", "thành công"]
+
+class NoiTuGame:
+    def __init__(self):
+        self.current_word = random.choice(STARTING_WORDS)
+        self.last_player_id = None
+        self.used_words = {self.current_word}
+        self.streak = 0
+
+    def reset(self):
+        self.current_word = random.choice(STARTING_WORDS)
+        self.last_player_id = None
+        self.used_words = {self.current_word}
+        self.streak = 0
+
+game_noitu = NoiTuGame()
+
+# ====================================================================
+# --- PHẦN 3: GIAO DIỆN BẦU CUA ---
 # ====================================================================
 class BauCuaView(discord.ui.View):
     def __init__(self, host_id):
@@ -146,7 +161,7 @@ class BetModal(discord.ui.Modal):
         await interaction.response.send_message(f"✅ Đã cược **${amount}** vào **{self.animal.capitalize()}** {self.emoji}", ephemeral=True)
 
 # ====================================================================
-# --- PHẦN 3: SETUP BOT & HỆ THỐNG BACKUP NÂNG CẤP ---
+# --- PHẦN 4: SETUP BOT & BACKUP BẤT TỬ ---
 # ====================================================================
 class MyBot(commands.Bot):
     def __init__(self): super().__init__(command_prefix="!", intents=discord.Intents.all())
@@ -158,7 +173,7 @@ bot = MyBot()
 async def on_ready():
     print(f'✅ Bot {bot.user.name} ĐÃ SẴN SÀNG TRÊN RENDER!')
     
-    # KHÔI PHỤC DỮ LIỆU THÔNG MINH (ANTI-CORRUPTION)
+    # KHÔI PHỤC DỮ LIỆU TỪ BACKUP
     if BACKUP_CHANNEL_ID:
         try:
             channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
@@ -168,32 +183,27 @@ async def on_ready():
                     if attachment.filename == DB_FILE:
                         content = await attachment.read()
                         try:
-                            # Kiểm tra xem file tải về có bị lỗi định dạng không trước khi lưu
                             json.loads(content.decode('utf-8'))
                             with open(DB_FILE, 'wb') as f:
                                 f.write(content)
                             print("☁️ Đã tải và khôi phục dữ liệu từ Backup thành công!")
-                            break # Khôi phục xong thì thoát vòng lặp
-                        except Exception as e:
+                            break 
+                        except Exception:
                             print("⚠️ File backup mới nhất bị lỗi, đang thử tìm bản cũ hơn...")
         except Exception as e:
             print(f"Lỗi khôi phục data: {e}")
 
     if BACKUP_CHANNEL_ID and not auto_backup_task.is_running(): 
         auto_backup_task.start()
-    await bot.change_presence(activity=discord.Game(name="/daily | /pay | Nối Từ"))
+    await bot.change_presence(activity=discord.Game(name="/noitu | /baucua | /daily"))
 
-# VÒNG LẶP BACKUP DỌN RÁC
 @tasks.loop(minutes=5)
 async def auto_backup_task():
     global data_changed
     if data_changed and BACKUP_CHANNEL_ID:
         try:
             channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
-            # Dọn dẹp siêu tốc: Xóa sạch tin nhắn cũ để kênh backup không bị rác
             await channel.purge(limit=50, check=lambda m: m.author == bot.user)
-            
-            # Gửi file mới
             now_vn = datetime.utcnow() + timedelta(hours=7)
             await channel.send(f"📦 **BACKUP AUTO** ({now_vn.strftime('%H:%M - %d/%m/%Y')}):", file=discord.File(DB_FILE))
             data_changed = False
@@ -201,11 +211,11 @@ async def auto_backup_task():
             print(f"Lỗi gửi backup: {e}")
 
 # ====================================================================
-# --- PHẦN 4: HỆ THỐNG NỐI TỪ KIẾM TIỀN ---
+# --- PHẦN 5: XỬ LÝ GAME NỐI TỪ (ON_MESSAGE) ---
 # ====================================================================
 @bot.event
 async def on_message(message):
-    global current_word, last_player_id
+    global game_noitu
     if message.author.bot: return
 
     if message.channel.id == NOITU_CHANNEL_ID:
@@ -213,42 +223,67 @@ async def on_message(message):
         
         # LỆNH ĐẦU HÀNG /STOP
         if text == "/stop":
-            if last_player_id:
-                winner_id = last_player_id
+            if game_noitu.last_player_id:
+                winner_id = game_noitu.last_player_id
                 db = load_db()
+                
+                # Thưởng cơ bản 50$ + bonus nếu chuỗi dài
+                bonus = (game_noitu.streak // 5) * 10
+                total_reward = 50 + bonus
+                
                 if winner_id in db["users"]:
-                    db["users"][winner_id]["balance"] += 50 
+                    db["users"][winner_id]["balance"] += total_reward
                     save_db(db)
-                    await message.channel.send(f"🏆 Quá khó! Mọi người đã chịu thua.\n<@{winner_id}> chiến thắng vòng này nhờ từ **'{current_word}'** và nhận được **$50**!")
+                
+                embed = discord.Embed(title="🛑 TRÒ CHƠI ĐÃ DỪNG!", color=discord.Color.red())
+                embed.add_field(name="🏆 Người chiến thắng", value=f"<@{winner_id}>", inline=False)
+                embed.add_field(name="🔥 Chuỗi đạt được", value=f"**{game_noitu.streak}** từ", inline=True)
+                embed.add_field(name="💰 Tiền thưởng", value=f"**${total_reward}**", inline=True)
+                await message.channel.send(embed=embed)
             else:
-                await message.channel.send(f"🛑 Đã dừng! Từ hiện tại là **'{current_word}'** nhưng vòng này chưa có ai chơi.")
+                await message.channel.send(f"🛑 Đã dừng! Từ hiện tại là **'{game_noitu.current_word}'** nhưng chưa ai chơi.")
             
-            current_word = random.choice(STARTING_WORDS)
-            last_player_id = None
-            await message.channel.send(f"🔄 **VÒNG MỚI BẮT ĐẦU!** Từ khởi đầu là: **{current_word}**\n*(Mời bạn nối tiếp chữ '{current_word.split()[-1]}')*")
+            game_noitu.reset()
+            await message.channel.send(f"🔄 **VÒNG MỚI BẮT ĐẦU!** Từ khởi đầu là: **{game_noitu.current_word}**\n*(Mời bạn nối tiếp chữ '{game_noitu.current_word.split()[-1]}')*")
             return
 
-        # LOGIC CHƠI CHÍNH
+        # LOGIC NỐI TỪ
         words = text.split()
         if len(words) == 2 and text.replace(" ", "").isalpha(): 
             uid = str(message.author.id)
             
-            if uid == last_player_id:
-                await message.reply("❌ Bạn không thể tự nối tiếp từ của chính mình! Hãy đợi người khác lên tiếng.")
+            if uid == game_noitu.last_player_id:
+                await message.reply("❌ Bạn không thể tự nối tiếp từ của chính mình! Hãy đợi người khác.")
                 return
             
-            last_syllable = current_word.split()[-1]
+            last_syllable = game_noitu.current_word.split()[-1]
             first_syllable = words[0]
             
             if first_syllable == last_syllable:
-                current_word = text
-                last_player_id = uid  
-                db = load_db()
+                # KIỂM TRA TRÙNG TỪ
+                if text in game_noitu.used_words:
+                    await message.add_reaction("♻️")
+                    await message.reply("⚠️ Từ này đã được sử dụng trong vòng này rồi! Vui lòng tìm từ khác.")
+                    return
+
+                # NỐI THÀNH CÔNG
+                game_noitu.current_word = text
+                game_noitu.last_player_id = uid
+                game_noitu.used_words.add(text)
+                game_noitu.streak += 1
                 
+                db = load_db()
+                # Cứ nối đúng mặc định được $5. Nếu chuỗi >= 10, mỗi từ được $10
+                reward_per_word = 10 if game_noitu.streak >= 10 else 5
+
                 if uid in db["users"]:
-                    db["users"][uid]["balance"] += 5
+                    db["users"][uid]["balance"] += reward_per_word
                     save_db(db)
                     await message.add_reaction("✅")
+                    
+                    # Chúc mừng nếu đạt cột mốc chuỗi
+                    if game_noitu.streak % 10 == 0:
+                        await message.channel.send(f"🔥 **COMBO X{game_noitu.streak}!** Từ bây giờ phần thưởng tăng lên!\n*(Tiếp tục nối chữ '{game_noitu.current_word.split()[-1]}')*")
                 else:
                     await message.reply("❌ Bạn nối đúng nhưng chưa `/link` tài khoản nên không nhận được thưởng!")
             else:
@@ -257,8 +292,19 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # ====================================================================
-# --- PHẦN 5: LỆNH BOT (SLASH COMMANDS) ---
+# --- PHẦN 6: LỆNH BOT (SLASH COMMANDS) ---
 # ====================================================================
+@bot.tree.command(name="noitu", description="Kiểm tra thông tin vòng Nối Từ hiện tại.")
+async def info_noitu(interaction: discord.Interaction):
+    global game_noitu
+    embed = discord.Embed(title="🔠 THÔNG TIN NỐI TỪ", color=discord.Color.blue())
+    embed.add_field(name="Từ hiện tại", value=f"**{game_noitu.current_word}**", inline=False)
+    embed.add_field(name="Gợi ý nối tiếp", value=f"Bắt đầu bằng chữ: **{game_noitu.current_word.split()[-1]}**", inline=False)
+    embed.add_field(name="Độ dài chuỗi", value=f"**{game_noitu.streak}** từ", inline=True)
+    embed.add_field(name="Người nối cuối", value=f"<@{game_noitu.last_player_id}>" if game_noitu.last_player_id else "Chưa có", inline=True)
+    embed.set_footer(text="Gõ /stop trên kênh nối từ để kết thúc vòng và nhận thưởng lớn!")
+    await interaction.response.send_message(embed=embed)
+
 @bot.tree.command(name="link", description="Liên kết tài khoản game Minecraft.")
 async def link(interaction: discord.Interaction, mc_name: str):
     db, uid = load_db(), str(interaction.user.id)
@@ -274,7 +320,6 @@ async def daily(interaction: discord.Interaction):
     db, uid = load_db(), str(interaction.user.id)
     if uid not in db["users"]: return await interaction.response.send_message("❌ Bạn chưa `/link`!", ephemeral=True)
     
-    # Reset chuẩn xác vào lúc 00:00 giờ Việt Nam (UTC+7)
     now_vn = datetime.utcnow() + timedelta(hours=7)
     current_date = now_vn.strftime("%Y-%m-%d")
     
