@@ -1,12 +1,13 @@
 import discord
 from discord.ext import commands, tasks
+from discord.app_commands import default_permissions
 import json
 import random
 import os
 import aiohttp
 from flask import Flask
 from threading import Thread
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ====================================================================
 # --- PHẦN 1: WEB SERVER CHO RENDER & CẤU HÌNH ---
@@ -25,9 +26,8 @@ def keep_alive():
     t.start()
 
 TOKEN = os.environ.get('DISCORD_TOKEN')
-SERVER_IP = os.environ.get('SERVER_IP', '') # Nhận IP dạng ip:port từ Render
+SERVER_IP = os.environ.get('SERVER_IP', '') 
 
-# Lấy ID Kênh từ biến môi trường
 try:
     CONSOLE_CHANNEL_ID = int(os.environ.get('CONSOLE_CHANNEL_ID', 0)) 
     BACKUP_CHANNEL_ID = int(os.environ.get('BACKUP_CHANNEL_ID', 0))   
@@ -39,9 +39,13 @@ except ValueError:
 
 DB_FILE = 'users.json'
 data_changed = False
-current_word = "thời tiết" # Từ khởi đầu mặc định
 
-# --- QUẢN LÝ DATABASE CHỐNG MẤT DỮ LIỆU ---
+# --- BIẾN TOÀN CỤC CHO GAME NỐI TỪ ---
+STARTING_WORDS = ["thời tiết", "gia đình", "máy tính", "bầu trời", "con mèo", "xe đạp", "hoa hồng", "âm nhạc", "hạnh phúc", "công việc", "bóng đá", "học tập"]
+current_word = random.choice(STARTING_WORDS)
+last_player_id = None 
+
+# --- QUẢN LÝ DATABASE ---
 def load_db():
     if not os.path.exists(DB_FILE): 
         return {"users": {}}
@@ -142,7 +146,7 @@ class BetModal(discord.ui.Modal):
         await interaction.response.send_message(f"✅ Đã cược **${amount}** vào **{self.animal.capitalize()}** {self.emoji}", ephemeral=True)
 
 # ====================================================================
-# --- PHẦN 3: SETUP BOT & AUTO RECOVERY ---
+# --- PHẦN 3: SETUP BOT & HỆ THỐNG BACKUP NÂNG CẤP ---
 # ====================================================================
 class MyBot(commands.Bot):
     def __init__(self): super().__init__(command_prefix="!", intents=discord.Intents.all())
@@ -154,57 +158,92 @@ bot = MyBot()
 async def on_ready():
     print(f'✅ Bot {bot.user.name} ĐÃ SẴN SÀNG TRÊN RENDER!')
     
-    # Khôi phục dữ liệu từ kênh chat Discord khi khởi động lại
+    # KHÔI PHỤC DỮ LIỆU THÔNG MINH (ANTI-CORRUPTION)
     if BACKUP_CHANNEL_ID:
         try:
             channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
-            async for msg in channel.history(limit=5):
+            async for msg in channel.history(limit=10):
                 if msg.author == bot.user and msg.attachments:
                     attachment = msg.attachments[0]
                     if attachment.filename == DB_FILE:
-                        await attachment.save(DB_FILE)
-                        print("☁️ Đã tải và khôi phục dữ liệu thành công!")
-                        break
+                        content = await attachment.read()
+                        try:
+                            # Kiểm tra xem file tải về có bị lỗi định dạng không trước khi lưu
+                            json.loads(content.decode('utf-8'))
+                            with open(DB_FILE, 'wb') as f:
+                                f.write(content)
+                            print("☁️ Đã tải và khôi phục dữ liệu từ Backup thành công!")
+                            break # Khôi phục xong thì thoát vòng lặp
+                        except Exception as e:
+                            print("⚠️ File backup mới nhất bị lỗi, đang thử tìm bản cũ hơn...")
         except Exception as e:
             print(f"Lỗi khôi phục data: {e}")
 
     if BACKUP_CHANNEL_ID and not auto_backup_task.is_running(): 
         auto_backup_task.start()
-    await bot.change_presence(activity=discord.Game(name="/daily | /pay | /baucua"))
+    await bot.change_presence(activity=discord.Game(name="/daily | /pay | Nối Từ"))
 
+# VÒNG LẶP BACKUP DỌN RÁC
 @tasks.loop(minutes=5)
 async def auto_backup_task():
     global data_changed
     if data_changed and BACKUP_CHANNEL_ID:
         try:
             channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
-            async for msg in channel.history(limit=10):
-                if msg.author == bot.user: await msg.delete()
-            await channel.send(f"📦 **BACKUP AUTO** ({datetime.now().strftime('%H:%M')}):", file=discord.File(DB_FILE))
+            # Dọn dẹp siêu tốc: Xóa sạch tin nhắn cũ để kênh backup không bị rác
+            await channel.purge(limit=50, check=lambda m: m.author == bot.user)
+            
+            # Gửi file mới
+            now_vn = datetime.utcnow() + timedelta(hours=7)
+            await channel.send(f"📦 **BACKUP AUTO** ({now_vn.strftime('%H:%M - %d/%m/%Y')}):", file=discord.File(DB_FILE))
             data_changed = False
-        except: pass
+        except Exception as e: 
+            print(f"Lỗi gửi backup: {e}")
 
 # ====================================================================
 # --- PHẦN 4: HỆ THỐNG NỐI TỪ KIẾM TIỀN ---
 # ====================================================================
 @bot.event
 async def on_message(message):
-    global current_word
+    global current_word, last_player_id
     if message.author.bot: return
 
     if message.channel.id == NOITU_CHANNEL_ID:
         text = message.content.lower().strip()
-        words = text.split()
         
-        # Chấp nhận chuỗi chữ có dấu tiếng Việt hợp lệ
+        # LỆNH ĐẦU HÀNG /STOP
+        if text == "/stop":
+            if last_player_id:
+                winner_id = last_player_id
+                db = load_db()
+                if winner_id in db["users"]:
+                    db["users"][winner_id]["balance"] += 50 
+                    save_db(db)
+                    await message.channel.send(f"🏆 Quá khó! Mọi người đã chịu thua.\n<@{winner_id}> chiến thắng vòng này nhờ từ **'{current_word}'** và nhận được **$50**!")
+            else:
+                await message.channel.send(f"🛑 Đã dừng! Từ hiện tại là **'{current_word}'** nhưng vòng này chưa có ai chơi.")
+            
+            current_word = random.choice(STARTING_WORDS)
+            last_player_id = None
+            await message.channel.send(f"🔄 **VÒNG MỚI BẮT ĐẦU!** Từ khởi đầu là: **{current_word}**\n*(Mời bạn nối tiếp chữ '{current_word.split()[-1]}')*")
+            return
+
+        # LOGIC CHƠI CHÍNH
+        words = text.split()
         if len(words) == 2 and text.replace(" ", "").isalpha(): 
+            uid = str(message.author.id)
+            
+            if uid == last_player_id:
+                await message.reply("❌ Bạn không thể tự nối tiếp từ của chính mình! Hãy đợi người khác lên tiếng.")
+                return
+            
             last_syllable = current_word.split()[-1]
             first_syllable = words[0]
             
             if first_syllable == last_syllable:
                 current_word = text
+                last_player_id = uid  
                 db = load_db()
-                uid = str(message.author.id)
                 
                 if uid in db["users"]:
                     db["users"][uid]["balance"] += 5
@@ -235,9 +274,12 @@ async def daily(interaction: discord.Interaction):
     db, uid = load_db(), str(interaction.user.id)
     if uid not in db["users"]: return await interaction.response.send_message("❌ Bạn chưa `/link`!", ephemeral=True)
     
-    current_date = datetime.now().strftime("%Y-%m-%d")
+    # Reset chuẩn xác vào lúc 00:00 giờ Việt Nam (UTC+7)
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    current_date = now_vn.strftime("%Y-%m-%d")
+    
     if db["users"][uid].get("last_daily", "") == current_date: 
-        return await interaction.response.send_message("⏳ Bạn đã nhận quà hôm nay rồi, hãy quay lại vào ngày mai!", ephemeral=True)
+        return await interaction.response.send_message("⏳ Bạn đã nhận quà hôm nay rồi, hãy quay lại vào sau 00:00 đêm nay!", ephemeral=True)
     
     reward = random.randint(50, 150)
     db["users"][uid]["last_daily"] = current_date
@@ -276,16 +318,11 @@ async def ruttien(interaction: discord.Interaction, so_tien: int):
     if not CONSOLE_CHANNEL_ID:
         return await interaction.response.send_message("❌ Kênh Console chưa được thiết lập!", ephemeral=True)
 
-    # Defer phản hồi để tránh lỗi quá 3 giây khi gọi API check server
     await interaction.response.defer()
 
-    # KIỂM TRA SERVER ONLINE (Xử lý thông minh bóc tách Port)
     if SERVER_IP:
         try:
-            clean_ip = SERVER_IP
-            if ":" in SERVER_IP:
-                clean_ip = SERVER_IP.split(":")[0] # Lấy cụm IP phía trước dấu hai chấm
-                
+            clean_ip = SERVER_IP.split(":")[0] if ":" in SERVER_IP else SERVER_IP
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"https://api.mcsrvstat.us/2/{clean_ip}") as resp:
                     if resp.status == 200:
@@ -318,6 +355,25 @@ async def vi(interaction: discord.Interaction):
     embed.add_field(name="👤 Tên Game", value=f"`{u.get('mc_name', 'Unknown')}`", inline=True)
     embed.add_field(name="💰 Số dư", value=f"**${u.get('balance', 0)}**", inline=True)
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="backup", description="[ADMIN] Bắt buộc bot lưu và gửi file backup ngay lập tức.")
+@default_permissions(administrator=True)
+async def force_backup(interaction: discord.Interaction):
+    if not BACKUP_CHANNEL_ID:
+        return await interaction.response.send_message("❌ Chưa thiết lập ID Kênh Backup!", ephemeral=True)
+    
+    await interaction.response.defer(ephemeral=True)
+    try:
+        channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
+        await channel.purge(limit=50, check=lambda m: m.author == bot.user)
+        now_vn = datetime.utcnow() + timedelta(hours=7)
+        await channel.send(f"🛡️ **BACKUP THỦ CÔNG** ({now_vn.strftime('%H:%M - %d/%m/%Y')}):", file=discord.File(DB_FILE))
+        
+        global data_changed
+        data_changed = False
+        await interaction.followup.send("✅ Đã ép bot sao lưu thành công lên kênh Backup!")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Có lỗi xảy ra: {e}")
 
 # KHỞI CHẠY
 if __name__ == "__main__":
